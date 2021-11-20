@@ -41,8 +41,13 @@ proc pop*[T, L](ec: EvilCage[T, L]): T =
   var idx = ec.head.fetchAdd(1, moAcquireRelease)
   assert idx < L, "You've exceeded the length of the cage."
   var slotval = ec.feed[idx].fetchAdd(spec.READER, moAcquire)
-  if (slotval and spec.WRITER) == 0 and (slotval and PTR_MASK) == 0:
-    return
+  var i: int
+  while (slotval and spec.WRITER) == 0 and (slotval and PTR_MASK) == 0:
+    slotval = ec.feed[idx].load(moRelaxed)
+    if i == 10_000:
+      return
+    else:
+      inc i
   atomicThreadFence(ATOMIC_ACQUIRE)
   result = cast[T](slotval and PTR_MASK)
   when T is ref:

@@ -11,9 +11,9 @@ import cps
 import evilcanary
 
 const
-  continuationCount = when defined(windows): 10_000 else: 10_000
+  continuationCount = 1_000
 let
-  threadCount = when defined(danger): countProcessors() else: 1
+  threadCount = 12
 
 type
   C = ref object of Continuation
@@ -28,16 +28,8 @@ setLogFilter:
   else:
     lvlDebug
 
-var q = newEvilCage[C](40_000)
+var q = newEvilCage[C](150_000)
 
-proc runThings() {.thread.} =
-  while true:
-    var job = pop q
-    if job.dismissed:
-      break
-    else:
-      while job.running:
-        job = trampoline job
 
 proc enqueue(c: C): C {.cpsMagic.} =
   check not q.isNil
@@ -71,6 +63,23 @@ proc doContinualThings() {.cps: C.} =
   noop()
   enqueue()
   discard counter.fetchAdd(1)
+
+proc runThings() {.thread.} =
+  # for i in 0 ..< continuationCount:
+  #   var c = whelp doContinualThings()
+  #   discard enqueue c
+  var i: int
+  while true:
+    if i < continuationCount:
+      var c = whelp doContinualThings()
+      discard enqueue c
+      inc i
+    var job = pop q
+    if job.dismissed:
+      break
+    else:
+      while job.running:
+        job = trampoline job
 
 template expectCounter(n: int): untyped =
   ## convenience
@@ -118,4 +127,4 @@ suite "evilCanary":
       checkpoint "joined $# threads" % [ $threadCount ]
 
 
-      expectCounter continuationCount
+      expectCounter (threadCount + 1) * continuationCount

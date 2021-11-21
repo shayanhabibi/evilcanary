@@ -5,9 +5,9 @@ import std/logging
 import std/atomics
 import std/os
 import std/macros
+import std/hashes
 
 import balls
-import cps
 import evilcanary
 
 const
@@ -16,7 +16,9 @@ let
   threadCount = 12
 
 type
-  C = ref object of Continuation
+  C = ref object
+    r: bool
+    e: int
 
 addHandler newConsoleLogger()
 
@@ -31,55 +33,38 @@ setLogFilter:
 var q = newEvilCage[C](150_000)
 
 
-proc enqueue(c: C): C {.cpsMagic.} =
-  check not q.isNil
+proc enqueue(c: C) =
+  c.r = true
+  c.e = c.e + 1
   discard q.push(c)
 
 var counter {.global.}: Atomic[int]
 
-# try to delay a reasonable amount of time despite platform
-when defined(windows):
-  proc noop(c: C): C {.cpsMagic.} =
-    sleep:
-      when defined(danger) and false: # Reduce cont count on windows before adding sleep
-        1
-      else:
-        0
-        # 1 # 🤔
-    c
-else:
-  import posix
-  proc noop(c: C): C {.cpsMagic.} =
-    const
-      ns = when defined(danger): 1_000 else: 10_000
-    var x = Timespec(tv_sec: 0.Time, tv_nsec: ns)
-    var y: Timespec
-    if 0 != nanosleep(x, y):
-      raise
-    c
-
-proc doContinualThings() {.cps: C.} =
-  enqueue()
-  noop()
-  enqueue()
-  discard counter.fetchAdd(1)
-
-proc runThings() {.thread.} =
-  # for i in 0 ..< continuationCount:
-  #   var c = whelp doContinualThings()
-  #   discard enqueue c
+proc noop =
   var i: int
   while true:
-    if i < continuationCount:
-      var c = whelp doContinualThings()
-      discard enqueue c
-      inc i
+    let v = hash i
+    if i == 1_000: break
+    inc i
+
+
+proc runThings() {.thread.} =
+  var i: int
+  while true:
     var job = pop q
-    if job.dismissed:
-      break
-    else:
-      while job.running:
-        job = trampoline job
+    if job.isNil:
+      if counter.load() > (continuationCount div 2):
+        echo "breaking"
+        break
+      noop()
+    elif job.r:
+      if job.e < 2:
+        enqueue job
+      elif job.e == 2:
+        noop()
+        enqueue job
+      else:
+        discard counter.fetchAdd(1, moRelaxed)
 
 template expectCounter(n: int): untyped =
   ## convenience
@@ -92,39 +77,25 @@ template expectCounter(n: int): untyped =
 
 suite "evilCanary":
   block:
-    ## run some continuations through the queue in another thread
-    when defined(danger): skip "boring"
-    var thr: Thread[void]
-
-    counter.store 0
-    dumpAllocStats:
-      for i in 0 ..< continuationCount:
-        var c = whelp doContinualThings()
-        discard enqueue c
-      createThread(thr, runThings)
-      joinThread thr
-      expectCounter continuationCount
-
-  block:
-    ## run some continuations through the queue in many threads
-    when not defined(danger): skip "slow"
+    ## Do some amazing shit
     var threads: seq[Thread[void]]
     newSeq(threads, threadCount)
 
     counter.store 0
-    dumpAllocStats:
-      for i in 0 ..< continuationCount:
-        var c = whelp doContinualThings()
-        discard enqueue c
-      checkpoint "queued $# continuations" % [ $continuationCount ]
+    for thread in threads.mitems:
+      createThread(thread, runThings)
+    checkpoint "created $# threads" % [ $threadCount ]
 
-      for thread in threads.mitems:
-        createThread(thread, runThings)
-      checkpoint "created $# threads" % [ $threadCount ]
+    for i in 0 ..< continuationCount:
+      var c = new C
+      enqueue c
+    checkpoint "queued $# ref objects" % [ $continuationCount ]
 
-      for thread in threads.mitems:
-        joinThread thread
-      checkpoint "joined $# threads" % [ $threadCount ]
+    for thread in threads.mitems:
+      joinThread thread
+    checkpoint "joined $# threads" % [ $threadCount ]
+    echo repr q.pop()
 
 
-      expectCounter (threadCount + 1) * continuationCount
+    echo counter.load
+    # expectCounter continuationCount

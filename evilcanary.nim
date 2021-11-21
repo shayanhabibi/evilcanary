@@ -24,27 +24,29 @@ proc push*[T, L](ec: EvilCage[T, L], el: T): bool =
   # Returs a bool because it can be used in different tests
   var idx = ec.tail.fetchAdd(1, moAcquireRelease)
   assert idx < L, "You've exceeded the length of the cage."
-  atomicThreadFence(ATOMIC_RELEASE)
   when T is ref:
     GC_ref el
   else:
     discard
   var pel = cast[uint](el) or spec.WRITER
-  var prev = ec.feed[idx].fetchAdd(pel, moRelease)
-  assert prev == spec.UNINIT
+
+  atomicThreadFence(ATOMIC_RELEASE)
+  var prev = ec.feed[idx].fetchAdd(pel, moAcquireRelease)
+  # assert prev == spec.UNINIT
   result = true
 
 proc pop*[T, L](ec: EvilCage[T, L]): T =
   var (head, tail) = ec.fetchEarAss()
+  var it: int
   if not head < tail:
     return
   var idx = ec.head.fetchAdd(1, moAcquireRelease)
-  assert idx < L, "You've exceeded the length of the cage."
-  var slotval = ec.feed[idx].fetchAdd(spec.READER, moAcquire)
+  assert idx < L, "You've exceeded the length of the cage. Head: " & $head & " Tail: " & $tail
+  var slotval = ec.feed[idx].fetchAdd(spec.READER, moAcquireRelease)
   var i: int
   while (slotval and spec.WRITER) == 0 and (slotval and PTR_MASK) == 0:
     slotval = ec.feed[idx].load(moRelaxed)
-    if i == 10_000:
+    if i == 1_000:
       return
     else:
       inc i
